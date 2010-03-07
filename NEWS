@@ -1,0 +1,8 @@
+This is IRCd-Damon, Copyright (c) IRCd-Damon Dev Team.
+See LICENSE for licensing details (GPL v2).
+
+-- IRCd-Damon 1.0.1
+
+- Fix memory leak with posix_spawn() calls.
+- Fix crash in IRCd help system when certain input is given.
+

@@ -1,0 +1,8 @@
+The IRCd-Damon Mercurial repository can be checked out using the following command:
+	hg clone http://hg.ircd-damon.org/ircd-damon/ ircd-damon
+
+
+
+IRCd-Damon's Mercurial repository depot can be browsed over the internet at 
+the following address:
+	http://hg.ircd-damon.org/

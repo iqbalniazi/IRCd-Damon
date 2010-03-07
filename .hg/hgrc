@@ -1,0 +1,30 @@
+[web]
+contact = #IRCd-Damon IRC.IRCd-Damon.org
+description = IRCd-Damon IRCd
+style = gitweb
+# If you want hyperlinks (optional)
+baseurl = http://hg.ircd-damon.org/
+
+[extensions]
+hgext.hgcia = /home/iqbal/ircd-damon/.hg/hgcia.py
+
+[cia]
+# your registered CIA user name
+user = iqbalniazi
+# the name of the project in CIA
+project = IRCd-Damon
+# the module or subproject (optional)
+#module = foo
+# Append a diffstat to the log message (optional)
+#diffstat = False
+# Use a custom template (optional)
+#template = {url}/rev/{node|short}\n{desc}-- {diffstat}
+# The URL of the CIA notification service (optional)
+#url = http://cia.navi.cx/
+# print message instead of sending it (optional)
+#test = False
+
+[hooks]
+# one of these:
+changegroup.cia = python:hgext.hgcia.hook
+#incoming.cia = python:hgext.hgcia.hook

@@ -1,0 +1,6 @@
+/ = in progress, x = done, ? = to be discussed, F = ircd-damon1.1.1 or next releases
+
+[/] Finishing IRCd-Damon
+        [x] Finishing Atheme IRC Services Protocol
+        [?] Finishing Anope IRC Services Protocol
+[/] IRCd-Damon Win32 Version
