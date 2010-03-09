@@ -6,3 +6,10 @@ See LICENSE for licensing details (GPL v2).
 - Fix memory leak with posix_spawn() calls.
 - Fix crash in IRCd help system when certain input is given.
 
+
+IRCd-Damon Development team might work on a Windows Version of IRCd-Damon.
+We are looking for some coders who can compile the IRCd-Damon code. :)
+
+If you are able to help out please visit us at irc.ircd-damon.org #ircd-damon
+
+		~ Iqbal
