@@ -157,7 +157,7 @@ typedef int (*ExtbanFunc)(const char *data, struct Client *client_p,
 #define ONLY_CHANOPSVOICED	(CHFL_CHANOP|CHFL_CHANHALFOP|CHFL_VOICE)
 
 #define is_chanowner(x)	((x) && (x)->flags & CHFL_CHANOWNER)
-#define is_chanprotected (x) ((x) && (x)->flags & CHFL_CHANPROTECTed)
+#define is_chanprotected (x) ((x) && (x)->flags & CHFL_CHANPROTECTED)
 #define is_chanop(x)	((x) && (x)->flags & CHFL_CHANOP)
 #define is_chanhalfop(x)	((x) && (x)->flags & CHFL_CHANHALFOP)
 #define is_voiced(x)	((x) && (x)->flags & CHFL_VOICE)
