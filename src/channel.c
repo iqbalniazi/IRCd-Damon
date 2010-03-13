@@ -5,7 +5,6 @@
  * Copyright (C) 1990 Jarkko Oikarinen and University of Oulu, Co Center 
  * Copyright (C) 1996-2002 Hybrid Development Team 
  * Copyright (C) 2002-2005 ircd-ratbox development team 
- * Copyright (C) 2010 IRCd-Damon Development Team
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -175,33 +174,12 @@ find_channel_status(struct membership *msptr, int combine)
 	char *p;
 
 	p = buffer;
-	
-	if(is_chanowner(msptr))
-	{
-		if(!combine)
-			return "~";
-		*p++ = '~';
-	}
-	
-	if(is_chanprotected(msptr))
-	{
-		if(!combine)
-			return "&";
-		*p++ = '&';
-	}
 
 	if(is_chanop(msptr))
 	{
 		if(!combine)
-			return "@";  // over here we need to ad ~ and & and % yeah
+			return "@";
 		*p++ = '@';
-	}
-	
-	if(is_chanhalfop(msptr))
-	{
-		if(!combine)
-			return "%";
-		*p++ = '%';
 	}
 
 	if(is_voiced(msptr))
@@ -461,7 +439,7 @@ channel_member_names(struct Channel *chptr, struct Client *client_p, int show_eo
 			if(IsInvisible(target_p) && !is_member)
 				continue;
 
-			/* space, possible "@+" prefix */ 
+			/* space, possible "@+" prefix */
 			if(cur_len + strlen(target_p->name) + 3 >= BUFSIZE - 3)
 			{
 				*(t - 1) = '\0';
@@ -958,7 +936,9 @@ check_spambot_warning(struct Client *source_p, const char *name)
 		   JOIN_LEAVE_COUNT_EXPIRE_TIME)
 		{
 			decrement_count = (t_delta / JOIN_LEAVE_COUNT_EXPIRE_TIME);
-			if(decrement_count > source_p->localClient->join_leave_count)
+			if(name != NULL)
+				;
+			else if(decrement_count > source_p->localClient->join_leave_count)
 				source_p->localClient->join_leave_count = 0;
 			else
 				source_p->localClient->join_leave_count -= decrement_count;
@@ -1093,9 +1073,10 @@ set_channel_topic(struct Channel *chptr, const char *topic, const char *topic_in
 	}
 }
 
-/* channel_modes()
+/* channel_modes_real()
  *
  * inputs       - pointer to channel
+ *              - pointer to channel Mode struct
  *              - pointer to client
  * output       - string with simple modes
  * side effects - result from previous calls overwritten
@@ -1103,7 +1084,7 @@ set_channel_topic(struct Channel *chptr, const char *topic, const char *topic_in
  * Stolen from ShadowIRCd 4 --nenolod
  */
 const char *
-channel_modes(struct Channel *chptr, struct Client *client_p)
+channel_modes_real(struct Channel *chptr, struct Mode *mode, struct Client *client_p)
 {
 	int i;
 	char buf1[BUFSIZE];
@@ -1116,40 +1097,40 @@ channel_modes(struct Channel *chptr, struct Client *client_p)
 	*pbuf = '\0';
 
 	for (i = 0; i < 256; i++)
-		if(chptr->mode.mode & chmode_flags[i])
+		if(mode->mode & chmode_flags[i])
 			*mbuf++ = i;
 
-	if(chptr->mode.limit)
+	if(mode->limit)
 	{
 		*mbuf++ = 'l';
 
 		if(!IsClient(client_p) || IsMember(client_p, chptr))
-			pbuf += rb_sprintf(pbuf, " %d", chptr->mode.limit);
+			pbuf += rb_sprintf(pbuf, " %d", mode->limit);
 	}
 
-	if(*chptr->mode.key)
+	if(*mode->key)
 	{
 		*mbuf++ = 'k';
 
 		if(pbuf > buf2 || !IsClient(client_p) || IsMember(client_p, chptr))
-			pbuf += rb_sprintf(pbuf, " %s", chptr->mode.key);
+			pbuf += rb_sprintf(pbuf, " %s", mode->key);
 	}
 
-	if(chptr->mode.join_num)
+	if(mode->join_num)
 	{
 		*mbuf++ = 'j';
 
 		if(pbuf > buf2 || !IsClient(client_p) || IsMember(client_p, chptr))
-			pbuf += rb_sprintf(pbuf, " %d:%d", chptr->mode.join_num,
-					   chptr->mode.join_time);
+			pbuf += rb_sprintf(pbuf, " %d:%d", mode->join_num,
+					   mode->join_time);
 	}
 
-	if(*chptr->mode.forward && (ConfigChannel.use_forward || !IsClient(client_p)))
+	if(*mode->forward && (ConfigChannel.use_forward || !IsClient(client_p)))
 	{
 		*mbuf++ = 'f';
 
 		if(pbuf > buf2 || !IsClient(client_p) || IsMember(client_p, chptr))
-			pbuf += rb_sprintf(pbuf, " %s", chptr->mode.forward);
+			pbuf += rb_sprintf(pbuf, " %s", mode->forward);
 	}
 
 	*mbuf = '\0';
