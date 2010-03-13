@@ -5,7 +5,6 @@
  *  Copyright (C) 1990 Jarkko Oikarinen and University of Oulu, Co Center
  *  Copyright (C) 1996-2002 Hybrid Development Team
  *  Copyright (C) 2002-2004 ircd-ratbox development team
- *  Copyright (C) 2010 IRCd-Damon Development Team
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -40,6 +39,7 @@ struct Client;
 struct Mode
 {
 	unsigned int mode;
+	unsigned int off_mode;
 	int limit;
 	char key[KEYLEN];
 	unsigned int join_num;
@@ -52,6 +52,7 @@ struct Channel
 {
 	rb_dlink_node node;
 	struct Mode mode;
+	struct Mode mode_lock;
 	char *topic;
 	char *topic_info;
 	time_t topic_time;
@@ -143,25 +144,18 @@ typedef int (*ExtbanFunc)(const char *data, struct Client *client_p,
 
 /* channel status flags */
 #define CHFL_PEON		0x0000	/* normal member of channel */
-#define CHFL_CHANOWNER     	0x0001	/* Channel owner */
-#define CHFL_CHANPROTECT  	0x0002	/* Channel owner */
-#define CHFL_CHANOP     	0x0004	/* Channel operator */
-#define CHFL_CHANHALFOP    	0x0008	/* Channel halfop */
-#define CHFL_VOICE      	0x0010	/* the power to speak */
-#define CHFL_BANNED			0x0020  /* cached as banned */
-#define CHFL_QUIETED		0x0040  /* cached as being +q victim */
-#define ONLY_SERVERS		0x0080
+#define CHFL_CHANOP     	0x0001	/* Channel operator */
+#define CHFL_VOICE      	0x0002	/* the power to speak */
+#define CHFL_BANNED		0x0008  /* cached as banned */
+#define CHFL_QUIETED		0x0010  /* cached as being +q victim */
+#define ONLY_SERVERS		0x0020
 #define ALL_MEMBERS		CHFL_PEON
 #define ONLY_CHANOPS		CHFL_CHANOP
-#define ONLY_CHANHALFOPS	(CHFL_CHANOP|CHFL_CHANHALFOP)
-#define ONLY_CHANOPSVOICED	(CHFL_CHANOP|CHFL_CHANHALFOP|CHFL_VOICE)
+#define ONLY_CHANOPSVOICED	(CHFL_CHANOP|CHFL_VOICE)
 
-#define is_chanowner(x)	((x) && (x)->flags & CHFL_CHANOWNER)
-#define is_chanprotected (x) ((x) && (x)->flags & CHFL_CHANPROTECTED)
 #define is_chanop(x)	((x) && (x)->flags & CHFL_CHANOP)
-#define is_chanhalfop(x)	((x) && (x)->flags & CHFL_CHANHALFOP)
 #define is_voiced(x)	((x) && (x)->flags & CHFL_VOICE)
-#define is_chanop_voiced(x) ((x) && (x)->flags & (CHFL_CHANOWNER|CHFL_CHANPROTECT|CHFL_CHANOP|CHFL_CHANHALFOP|CHFL_VOICE))
+#define is_chanop_voiced(x) ((x) && (x)->flags & (CHFL_CHANOP|CHFL_VOICE))
 #define can_send_banned(x) ((x) && (x)->flags & (CHFL_BANNED|CHFL_QUIETED))
 
 /* channel modes ONLY */
@@ -179,7 +173,7 @@ typedef int (*ExtbanFunc)(const char *data, struct Client *client_p,
 #define MODE_FREEINVITE 0x0800  /* allow free use of /invite */
 #define MODE_FREETARGET 0x1000  /* can be forwarded to without authorization */
 #define MODE_DISFORWARD 0x2000  /* disable channel forwarding */
-#define MODE_NOCTCP		0x4000 /* disable CTCPs on the channel */
+#define MODE_NOCTCP     0x8000  /* Block CTCPs directed to this channel */
 
 #define CHFL_BAN        0x10000000	/* ban channel flag */
 #define CHFL_EXCEPTION  0x20000000	/* exception to ban channel flag */
@@ -244,7 +238,9 @@ extern void channel_member_names(struct Channel *chptr, struct Client *,
 
 extern void del_invite(struct Channel *chptr, struct Client *who);
 
-const char *channel_modes(struct Channel *chptr, struct Client *who);
+const char *channel_modes_real(struct Channel *chptr, struct Mode *mode, struct Client *who);
+#define channel_modes(chptr, who)	channel_modes_real(chptr, &(chptr)->mode, who)
+#define channel_mlock(chptr, who)	channel_modes_real(chptr, &(chptr)->mode_lock, who)
 
 extern struct Channel *find_bannickchange_channel(struct Client *client_p);
 
@@ -263,6 +259,8 @@ extern void send_cap_mode_changes(struct Client *client_p, struct Client *source
 
 extern void set_channel_mode(struct Client *client_p, struct Client *source_p,
             	struct Channel *chptr, struct membership *msptr, int parc, const char *parv[]);
+extern void set_channel_mlock(struct Client *client_p, struct Client *source_p,
+            	struct Channel *chptr, int parc, const char *parv[]);
 
 extern struct ChannelMode chmode_table[256];
 
