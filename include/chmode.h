@@ -66,16 +66,7 @@ extern void chm_limit(struct Client *source_p, struct Channel *chptr,
 extern void chm_regonly(struct Client *source_p, struct Channel *chptr,
 	   int alevel, int parc, int *parn,
 	   const char **parv, int *errors, int dir, char c, long mode_type);
-extern void chm_owner(struct Client *source_p, struct Channel *chptr,
-	   int alevel, int parc, int *parn,
-	   const char **parv, int *errors, int dir, char c, long mode_type);
-extern void chm_protected(struct Client *source_p, struct Channel *chptr,
-	   int alevel, int parc, int *parn,
-	   const char **parv, int *errors, int dir, char c, long mode_type);
 extern void chm_op(struct Client *source_p, struct Channel *chptr,
-	   int alevel, int parc, int *parn,
-	   const char **parv, int *errors, int dir, char c, long mode_type);
-extern void chm_halfop(struct Client *source_p, struct Channel *chptr,
 	   int alevel, int parc, int *parn,
 	   const char **parv, int *errors, int dir, char c, long mode_type);
 extern void chm_voice(struct Client *source_p, struct Channel *chptr,
@@ -88,4 +79,4 @@ extern unsigned int find_cflag_slot(void);
 extern char cflagsbuf[256];
 extern char cflagsmyinfo[256];
 
-#endif 
+#endif
