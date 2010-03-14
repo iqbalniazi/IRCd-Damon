@@ -181,6 +181,13 @@ find_channel_status(struct membership *msptr, int combine)
 			return "@";
 		*p++ = '@';
 	}
+	
+	if(is_halfop(msptr))
+	{
+		if(!combine)
+			return "%";
+		*p++ = '%';
+	}
 
 	if(is_voiced(msptr))
 		*p++ = '+';
@@ -439,7 +446,7 @@ channel_member_names(struct Channel *chptr, struct Client *client_p, int show_eo
 			if(IsInvisible(target_p) && !is_member)
 				continue;
 
-			/* space, possible "@+" prefix */
+			/* space, possible "@%+" prefix */
 			if(cur_len + strlen(target_p->name) + 3 >= BUFSIZE - 3)
 			{
 				*(t - 1) = '\0';
@@ -884,7 +891,7 @@ find_bannickchange_channel(struct Client *client_p)
 	{
 		msptr = ptr->data;
 		chptr = msptr->chptr;
-		if (is_chanop_voiced(msptr))
+		if (is_chanop_halfop_voiced(msptr))
 			continue;
 		/* cached can_send */
 		if (msptr->bants == chptr->bants)
@@ -897,7 +904,7 @@ find_bannickchange_channel(struct Client *client_p)
 			return chptr;
 	}
 	return NULL;
-}
+} 
 
 /* void check_spambot_warning(struct Client *source_p)
  * Input: Client to check, channel name or NULL if this is a part.
