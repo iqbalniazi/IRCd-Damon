@@ -5,6 +5,7 @@
  *  Copyright (C) 1990 Jarkko Oikarinen and University of Oulu, Co Center
  *  Copyright (C) 1996-2002 Hybrid Development Team
  *  Copyright (C) 2002-2004 ircd-ratbox development team
+ *  Copyright (C) 2010 IRCd-Damon Development Team
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -145,17 +146,21 @@ typedef int (*ExtbanFunc)(const char *data, struct Client *client_p,
 /* channel status flags */
 #define CHFL_PEON		0x0000	/* normal member of channel */
 #define CHFL_CHANOP     	0x0001	/* Channel operator */
-#define CHFL_VOICE      	0x0002	/* the power to speak */
+#define CHFL_CHANHALFOP		0x0002  /* Channel half-operator */
+#define CHFL_VOICE      	0x0004	/* the power to speak */
 #define CHFL_BANNED		0x0008  /* cached as banned */
 #define CHFL_QUIETED		0x0010  /* cached as being +q victim */
 #define ONLY_SERVERS		0x0020
 #define ALL_MEMBERS		CHFL_PEON
 #define ONLY_CHANOPS		CHFL_CHANOP
-#define ONLY_CHANOPSVOICED	(CHFL_CHANOP|CHFL_VOICE)
+#define ONLY_CHANOPSVOICED	(CHFL_CHANOP|CHFL_CHANHALFOP|CHFL_VOICE)
+#define ONLY_CHANOPSHALFOP		(CHFL_CHANOP|CHFL_HALFOP)
 
 #define is_chanop(x)	((x) && (x)->flags & CHFL_CHANOP)
+#define is_chanhalfop(x)	((x) && (x)->flags & CHFL_CHANHALFOP)
 #define is_voiced(x)	((x) && (x)->flags & CHFL_VOICE)
-#define is_chanop_voiced(x) ((x) && (x)->flags & (CHFL_CHANOP|CHFL_VOICE))
+#define is_chanhalfop_voiced(x) ((x) && (x)->flags & (CHFL_CHANHALFOP|CHFL_VOICE))
+#define is_chanop_voiced(x) ((x) && (x)->flags & (CHFL_CHANOP|CHFL_CHANHALFOP|CHFL_VOICE))
 #define can_send_banned(x) ((x) && (x)->flags & (CHFL_BANNED|CHFL_QUIETED))
 
 /* channel modes ONLY */
