@@ -3,5 +3,5 @@
 [/] Finishing IRCd-Damon
         [x] Finishing Atheme IRC Services Protocol
         [?] Finishing Anope IRC Services Protocol
-[/] IRCd-Damon Win32 Version
-	[?] Configuring with Cygwin
+[?] IRCd-Damon Win32 Version
+		[?] Configuring with Cygwin
