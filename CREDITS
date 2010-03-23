@@ -1,17 +1,15 @@
-IRCd-Damon is a new ircd that has been expanded from
-charydbis. Many people have worked hard on making this 
-IRCd become efficient. 
- 
-The IRCd-Damon core team is listed in nick-alphabetical order:
- 
-Cr`eme, Iqbal Niazi <iqbal -at- ircd-damon.org> 
-J, Julien Savard <julien -at- ircd-damon.org>
+IRCd-Damon is a evolved version of ircd-ratbox devel. We want to specially
+thank AmberNet for adding some great new features.
 
- 
-The following people have made contributions to the IRCd-Damon releases,
-in nick-alphabetical order:
- 
+The following people have contributed to IRCd-Damon:
+
+Iqbal, Iqbal Niazi <iqbal -at- ircd-damon.org>
+juju2143, Julien Savard <julient -at- ircd-damon.org>
+
+The following people have helped us out with donations and other types of
+help.
+
+mike 
 Matthew
 
-Visit the IRCd-Damon website at: http://www.ircd-damon.org
-Visit us on IRC at: irc.ircd-damon.org #ircd-damon
+
