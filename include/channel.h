@@ -1,4 +1,4 @@
-/*
+*
  *  ircd-ratbox: A slightly useful ircd.
  *  channel.h: The ircd channel header.
  *
@@ -26,8 +26,6 @@
 
 #ifndef INCLUDED_channel_h
 #define INCLUDED_channel_h
-#include "config.h"		/* config settings */
-#include "ircd_defs.h"		/* buffer sizes */
 
 #define MODEBUFLEN      200
 
@@ -56,7 +54,6 @@ struct Channel
 	char *topic;
 	char *topic_info;
 	time_t topic_time;
-	time_t users_last;	/* when last user was in channel */
 	time_t last_knock;	/* don't allow knock to flood */
 
 	rb_dlink_list members;	/* channel members */
@@ -74,6 +71,8 @@ struct Channel
 
 	unsigned int join_count;  /* joins within delta */
 	unsigned int join_delta;  /* last ts of join */
+
+	struct Dictionary *metadata;
 
 	unsigned long bants;
 	time_t channelts;
@@ -117,6 +116,7 @@ struct ChModeChange
 	int caps;
 	int nocaps;
 	int mems;
+	int override;
 	struct Client *client;
 };
 
@@ -150,13 +150,17 @@ typedef int (*ExtbanFunc)(const char *data, struct Client *client_p,
 #define CHFL_BANNED		0x0008  /* cached as banned */
 #define CHFL_QUIETED		0x0010  /* cached as being +q victim */
 #define ONLY_SERVERS		0x0020
+#define CHFL_HALFOP		0x0040
+#define CHFL_ADMIN		0x0080
+#define	ONLY_OPERS		0x0100
 #define ALL_MEMBERS		CHFL_PEON
 #define ONLY_CHANOPS		CHFL_CHANOP
 #define ONLY_CHANOPSVOICED	(CHFL_CHANOP|CHFL_VOICE)
 
+#define is_chmode_h(x)	((x) && (x)->flags & CHFL_HALFOP) /* does not check if halfop is enabled, should typically not be used */
+#define is_chmode_a(x)	((x) && (x)->flags & CHFL_ADMIN) /* does not check if admin is enabled, should typically not be used */
 #define is_chanop(x)	((x) && (x)->flags & CHFL_CHANOP)
 #define is_voiced(x)	((x) && (x)->flags & CHFL_VOICE)
-#define is_chanop_voiced(x) ((x) && (x)->flags & (CHFL_CHANOP|CHFL_VOICE))
 #define can_send_banned(x) ((x) && (x)->flags & (CHFL_BANNED|CHFL_QUIETED))
 
 /* channel modes ONLY */
@@ -174,6 +178,15 @@ typedef int (*ExtbanFunc)(const char *data, struct Client *client_p,
 #define MODE_FREEINVITE 0x0800  /* allow free use of /invite */
 #define MODE_FREETARGET 0x1000  /* can be forwarded to without authorization */
 #define MODE_DISFORWARD 0x2000  /* disable channel forwarding */
+#define MODE_NOCTCP     0x8000  /* Block CTCPs directed to this channel */
+#define MODE_NONOTICE	0x10000	/* Block notices directed to this channel */
+#define MODE_NOACTION	0x20000 /* Block CTCP ACTION directed to this channel */
+#define MODE_NOKICK	0x40000 /* Disable /kick on this channel */
+#define MODE_NONICK	0x80000 /* Disable /nick for anyone on this channel */
+#define MODE_NOCAPS	0x100000 /* Block messages in all capital letters */
+#define MODE_NOREJOIN	0x200000 /* Block rejoin immediately after kick */
+#define MODE_NOREPEAT	0x400000 /* Block repeat messages */
+#define MODE_NOOPERKICK	0x800000 /* disallow kicking opers */
 
 #define CHFL_BAN        0x10000000	/* ban channel flag */
 #define CHFL_EXCEPTION  0x20000000	/* exception to ban channel flag */
@@ -224,6 +237,11 @@ extern int can_join(struct Client *source_p, struct Channel *chptr, char *key);
 
 extern struct membership *find_channel_membership(struct Channel *, struct Client *);
 extern const char *find_channel_status(struct membership *msptr, int combine);
+extern int is_halfop(struct membership *msptr);
+extern int is_admin(struct membership *msptr);
+extern int is_any_op(struct membership *msptr);
+extern int is_chanop_voiced(struct membership *msptr);
+extern int can_kick_deop(struct membership *source, struct membership *target);
 extern void add_user_to_channel(struct Channel *, struct Client *, int flags);
 extern void remove_user_from_channel(struct membership *);
 extern void remove_user_from_channels(struct Client *);
@@ -240,7 +258,11 @@ extern void del_invite(struct Channel *chptr, struct Client *who);
 
 const char *channel_modes(struct Channel *chptr, struct Client *who);
 
+extern int has_common_channel(struct Client *client1, struct Client *client2);
+
 extern struct Channel *find_bannickchange_channel(struct Client *client_p);
+
+extern struct Channel *find_nonickchange_channel(struct Client *client_p);
 
 extern void check_spambot_warning(struct Client *source_p, const char *name);
 
@@ -255,10 +277,10 @@ extern void unset_chcap_usage_counts(struct Client *serv_p);
 extern void send_cap_mode_changes(struct Client *client_p, struct Client *source_p,
 				  struct Channel *chptr, struct ChModeChange foo[], int);
 
+void resv_chan_forcepart(const char *name, const char *reason, int temp_time);
+
 extern void set_channel_mode(struct Client *client_p, struct Client *source_p,
             	struct Channel *chptr, struct membership *msptr, int parc, const char *parv[]);
-
-extern const struct mode_letter chmode_flags[];
 
 extern struct ChannelMode chmode_table[256];
 
@@ -272,6 +294,17 @@ extern ExtbanFunc extban_table[256];
 extern int match_extban(const char *banstr, struct Client *client_p, struct Channel *chptr, long mode_type);
 extern int valid_extban(const char *banstr, struct Client *client_p, struct Channel *chptr, long mode_type);
 const char * get_extban_string(void);
+
+extern struct Channel * check_forward(struct Client *source_p, struct Channel *chptr, char *key);
+extern void user_join(struct Client * client_p, struct Client * source_p, const char * channels, const char * keys);
+extern void do_join_0(struct Client *client_p, struct Client *source_p);
+extern int check_channel_name_loc(struct Client *source_p, const char *name);
+
+extern struct Metadata *channel_metadata_add(struct Channel *target, const char *name, const char *value, int propegate);
+extern struct Metadata *channel_metadata_time_add(struct Channel *target, const char *name, time_t timevalue, const char *value);
+extern void channel_metadata_delete(struct Channel *target, const char *name, int propegate);
+extern struct Metadata *channel_metadata_find(struct Channel *target, const char *name);
+extern void channel_metadata_clear(struct Channel *target);
 
 
 #endif /* INCLUDED_channel_h */
