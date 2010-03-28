@@ -40,6 +40,7 @@
 #include "snomask.h"
 #include "match.h"
 #include "ircd.h"
+#include "privilege.h"
 
 /* other structs */
 struct Blacklist;
@@ -51,6 +52,11 @@ struct Blacklist;
 #define CLIENT_BUFSIZE 512	/* must be at least 512 bytes */
 
 #define IDLEN		10
+
+#define TGCHANGE_NUM		10	/* how many targets we keep track of */
+#define TGCHANGE_REPLY		5	/* how many reply targets */
+#define TGCHANGE_INITIAL	10	/* initial free targets (normal) */
+#define TGCHANGE_INITIAL_LOW	4	/* initial free targets (possible spambot) */
 
 /*
  * pre declare structs
@@ -68,22 +74,6 @@ struct PreClient;
 struct ListClient;
 struct scache_entry;
 
-/* 
- * Atheme's coding standards require that we use BSD-style user-defined types
- * for stuff. Fun! --nenolod
- */
-typedef struct User user_t;
-typedef struct Server server_t;
-typedef struct Client client_t;
-typedef struct LocalUser local_user_t;
-typedef struct Listener listener_t;
-typedef struct DNSReply dns_reply_t;
-typedef struct Whowas whowas_entry_t;
-typedef struct ConfItem conf_item_t;
-typedef struct AuthRequest auth_request_t;
-typedef struct PreClient pre_client_t;
-typedef struct ListClient list_client_t;
-
 /*
  * Client structures
  */
@@ -94,12 +84,14 @@ struct User
 	char *away;		/* pointer to away message */
 	int refcnt;		/* Number of times this block is referenced */
 
+	struct Dictionary *metadata;
+
 	char suser[NICKLEN+1];
 };
 
 struct Server
 {
-	user_t *user;		/* who activated this connection */
+	struct User *user;	/* who activated this connection */
 	char by[NICKLEN];
 	rb_dlink_list servers;
 	rb_dlink_list users;
@@ -122,12 +114,12 @@ struct Client
 {
 	rb_dlink_node node;
 	rb_dlink_node lnode;
-	user_t *user;		/* ...defined, if this is a User */
-	server_t *serv;		/* ...defined, if this is a server */
-	client_t *servptr;	/* Points to server this Client is on */
-	client_t *from;		/* == self, if Local Client, *NEVER* NULL! */
+	struct User *user;	/* ...defined, if this is a User */
+	struct Server *serv;	/* ...defined, if this is a server */
+	struct Client *servptr;	/* Points to server this Client is on */
+	struct Client *from;	/* == self, if Local Client, *NEVER* NULL! */
 
-	whowas_entry_t *whowas;	/* Pointers to whowas structs */
+	struct Whowas *whowas;	/* Pointers to whowas structs */
 	time_t tsinfo;		/* TS on the nick, SVINFO on server */
 	unsigned int umodes;	/* opers, normal users subset */
 	unsigned int flags;	/* client flags */
@@ -168,8 +160,15 @@ struct Client
 	 */
 	rb_dlink_list on_allow_list;
 
-	local_user_t *localClient;
-	pre_client_t *preClient;
+	time_t first_received_message_time;
+	int received_number_of_privmsgs;
+	int flood_noticed;
+
+	struct LocalUser *localClient;
+	struct PreClient *preClient;
+
+	time_t large_ctcp_sent; /* ctcp to large group sent, relax flood checks */
+	char *certfp; /* client certificate fingerprint */
 };
 
 struct LocalUser
@@ -189,9 +188,6 @@ struct LocalUser
 	int oper_warn_count_down;	/* warn opers of this possible 
 					   spambot every time this gets to 0 */
 	time_t last_caller_id_time;
-	time_t first_received_message_time;
-	int received_number_of_privmsgs;
-	int flood_noticed;
 
 	time_t lasttime;	/* last time we parsed something */
 	time_t firsttime;	/* time client was created */
@@ -215,8 +211,8 @@ struct LocalUser
 	unsigned int receiveK;	/* Statistics: total k-bytes received */
 	unsigned short sendB;	/* counters to count upto 1-k lots of bytes */
 	unsigned short receiveB;	/* sent and received. */
-	listener_t *listener;		/* listener accepted from */
-	conf_item_t *att_conf;		/* attached conf */
+	struct Listener *listener;	/* listener accepted from */
+	struct ConfItem *att_conf;	/* attached conf */
 	struct server_conf *att_sconf;
 
 	struct rb_sockaddr_storage ip;
@@ -230,6 +226,7 @@ struct LocalUser
 	 * agreed. lets get rid of it someday! --nenolod
 	 */
 	char *passwd;
+	char *auth_user;
 	char *opername; /* name of operator{} block being used or tried (challenge) */
 	char *challenge;
 	char *fullcaps;
@@ -262,23 +259,32 @@ struct LocalUser
 	int sent_parsed;	/* how many messages we've parsed in this second */
 	time_t last_knock;	/* time of last knock */
 	unsigned long random_ping;
-	auth_request_t	*auth_request;
+	struct AuthRequest *auth_request;
 
 	/* target change stuff */
-	uint32_t targets[10];		/* targets were aware of (fnv32(use_id(target_p))) */
-	unsigned int targinfo[2];	/* cyclic array, no in use */
+	/* targets we're aware of (fnv32(use_id(target_p))):
+	 * 0..TGCHANGE_NUM-1 regular slots
+	 * TGCHANGE_NUM..TGCHANGE_NUM+TGCHANGE_REPLY-1 reply slots
+	 */
+	uint32_t targets[TGCHANGE_NUM + TGCHANGE_REPLY];
+	unsigned int targets_free;	/* free targets */
 	time_t target_last;		/* last time we cleared a slot */
 
-	list_client_t *safelist_data;
+	struct ListClient *safelist_data;
 
 	char *mangledhost; /* non-NULL if host mangling module loaded and
 			      applicable to this client */
 
 	struct _ssl_ctl *ssl_ctl;		/* which ssl daemon we're associate with */
-	rb_uint32_t localflags;
+	struct _ssl_ctl *z_ctl;			/* second ctl for ssl+zlib */
+	uint32_t localflags;
 	struct ZipStats *zipstats;		/* zipstats */
-	rb_uint16_t cork_count;			/* used for corking/uncorking connections */
+	uint16_t cork_count;			/* used for corking/uncorking connections */
 	struct ev_entry *event;			/* used for associated events */
+
+	struct PrivilegeSet *privset;		/* privset... */
+
+	struct rb_event_t *override_timeout_event;
 };
 
 struct PreClient
@@ -305,12 +311,6 @@ struct ListClient
 	/* It would be nice to add other modifiers,
 	 * but not for 1.1 --nenolod
 	 */
-};
-
-struct exit_client_hook
-{
-	struct Client *client_p;
-	char exit_message[TOPICLEN];
 };
 
 /*
@@ -375,12 +375,7 @@ struct exit_client_hook
  * ts stuff
  */
 #define TS_CURRENT	6
-
-#ifdef TS6_ONLY
 #define TS_MIN          6
-#else
-#define TS_MIN          3
-#endif
 
 #define TS_DOESTS       0x10000000
 #define DoesTS(x)       ((x)->tsinfo & TS_DOESTS)
@@ -404,17 +399,14 @@ struct exit_client_hook
 #define FLAGS_GOTID        0x0080	/* successful ident lookup achieved */
 #define FLAGS_FLOODDONE    0x0100	/* flood grace period over / reported */
 #define FLAGS_NORMALEX     0x0400	/* Client exited normally */
-#define FLAGS_SENDQEX      0x0800	/* Sendq exceeded */
-#define FLAGS_SERVLINK     0x10000	/* servlink has servlink process */
-#define FLAGS_MARK	   0x20000	/* marked client */
-#define FLAGS_HIDDEN       0x40000	/* hidden server */
-#define FLAGS_EOB          0x80000	/* EOB */
-#define FLAGS_MYCONNECT	   0x100000	/* MyConnect */
-#define FLAGS_IOERROR      0x200000	/* IO error */
-#define FLAGS_SERVICE	   0x400000	/* network service */
-#define FLAGS_TGCHANGE     0x800000	/* we're allowed to clear something */
-#define FLAGS_DYNSPOOF     0x1000000	/* dynamic spoof, only opers see ip */
-#define FLAGS_EXUNKNOWN	   0x2000000	/* too many unknowns exit.. */
+#define FLAGS_MARK	   0x10000	/* marked client */
+#define FLAGS_HIDDEN       0x20000	/* hidden server */
+#define FLAGS_EOB          0x40000	/* EOB */
+#define FLAGS_MYCONNECT	   0x80000	/* MyConnect */
+#define FLAGS_IOERROR      0x100000	/* IO error */
+#define FLAGS_SERVICE	   0x200000	/* network service */
+#define FLAGS_TGCHANGE     0x400000	/* we're allowed to clear something */
+#define FLAGS_DYNSPOOF     0x800000	/* dynamic spoof, only opers see ip */
 
 /* flags for local clients, this needs stuff moved from above to here at some point */
 #define LFLAGS_SSL		0x00000001
@@ -433,11 +425,18 @@ struct exit_client_hook
 #define UMODE_DEAF	   0x0080
 #define UMODE_NOFORWARD    0x0100	/* don't forward */
 #define UMODE_REGONLYMSG   0x0200	/* only allow logged in users to msg */
+#define UMODE_NOCTCP	   0x0400	/* block CTCPs except for ACTION */
+#define UMODE_NOINVITE	   0x0800	/* block invites */
+#define UMODE_BOT	   0x8000	/* mark as a bot in whois */
+#define UMODE_SCALLERID    0x40000	/* soft caller id */
 
 /* user information flags, only settable by remote mode or local oper */
 #define UMODE_OPER         0x1000	/* Operator */
 #define UMODE_ADMIN        0x2000	/* Admin on server */
 #define UMODE_SSLCLIENT    0x4000	/* using SSL */
+#define UMODE_OVERRIDE     0x20000  /* able to override */
+
+#define IsOverride(x)      ((x)->umodes & UMODE_OVERRIDE)
 
 /* overflow flags */
 /* EARLIER FLAGS ARE IN s_newconf.h */
@@ -489,8 +488,6 @@ struct exit_client_hook
 #define IsDynSpoof(x)		((x)->flags & FLAGS_DYNSPOOF)
 #define SetDynSpoof(x)		((x)->flags |= FLAGS_DYNSPOOF)
 #define ClearDynSpoof(x)	((x)->flags &= ~FLAGS_DYNSPOOF)
-#define IsExUnknown(x)		((x)->flags & FLAGS_EXUNKNOWN)
-#define SetExUnknown(x)		((x)->flags |= FLAGS_EXUNKNOWN)
 
 /* local flags */
 
@@ -528,6 +525,10 @@ struct exit_client_hook
 #define IsDeaf(x)		((x)->umodes & UMODE_DEAF)
 #define IsNoForward(x)		((x)->umodes & UMODE_NOFORWARD)
 #define IsSetRegOnlyMsg(x)	((x)->umodes & UMODE_REGONLYMSG)
+#define IsSetNoCTCP(x)		((x)->umodes & UMODE_NOCTCP)
+#define IsSetNoInvite(x)	((x)->umodes & UMODE_NOINVITE)
+#define IsSetBot(x)		((x)->umodes & UMODE_BOT)
+#define IsSetSCallerId(x)	((x)->umodes & UMODE_SCALLERID)
 
 #define SetGotId(x)             ((x)->flags |= FLAGS_GOTID)
 #define IsGotId(x)              (((x)->flags & FLAGS_GOTID) != 0)
@@ -575,11 +576,10 @@ extern void check_dlines(void);
 extern void check_xlines(void);
 
 extern const char *get_client_name(struct Client *client, int show_ip);
-extern const char *get_server_name(struct Client *client, int show_ip);
 extern const char *log_client_name(struct Client *, int);
 extern int is_remote_connect(struct Client *);
 extern void init_client(void);
-extern client_t *make_client(struct Client *from);
+extern struct Client *make_client(struct Client *from);
 extern void free_pre_client(struct Client *client);
 extern void free_client(struct Client *client);
 
@@ -592,27 +592,32 @@ extern void error_exit_client(struct Client *, int);
 extern void count_local_client_memory(size_t * count, size_t * memory);
 extern void count_remote_client_memory(size_t * count, size_t * memory);
 
-extern client_t *find_chasing(struct Client *, const char *, int *);
-extern client_t *find_person(const char *);
-extern client_t *find_named_person(const char *);
-extern client_t *next_client(struct Client *, const char *);
+extern struct Client *find_chasing(struct Client *, const char *, int *);
+extern struct Client *find_person(const char *);
+extern struct Client *find_named_person(const char *);
+extern struct Client *next_client(struct Client *, const char *);
 
 #define accept_message(s, t) ((s) == (t) || (rb_dlinkFind((s), &((t)->localClient->allow_list))))
 extern void del_all_accepts(struct Client *client_p);
 
-extern void dead_link(struct Client *client_p);
+extern void dead_link(struct Client *client_p, int sendqex);
 extern int show_ip(struct Client *source_p, struct Client *target_p);
 extern int show_ip_conf(struct ConfItem *aconf, struct Client *target_p);
 
 extern void initUser(void);
 extern void free_user(struct User *, struct Client *);
-extern user_t *make_user(struct Client *);
-extern server_t *make_server(struct Client *);
+extern struct User *make_user(struct Client *);
+extern struct Server *make_server(struct Client *);
 extern void close_connection(struct Client *);
 extern void init_uid(void);
 extern char *generate_uid(void);
 
 void allocate_away(struct Client *);
 void free_away(struct Client *);
+
+extern struct Metadata *user_metadata_add(struct Client *target, const char *name, const char *value, int propegate);
+extern void user_metadata_delete(struct Client *target, const char *name, int propegate);
+extern struct Metadata *user_metadata_find(struct Client *target, const char *name);
+extern void user_metadata_clear(struct Client *target);
 
 #endif /* INCLUDED_client_h */

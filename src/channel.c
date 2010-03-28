@@ -26,6 +26,7 @@
 
 #include "stdinc.h"
 #include "channel.h"
+#include "chmode.h"
 #include "client.h"
 #include "common.h"
 #include "hash.h"
@@ -40,6 +41,15 @@
 #include "s_conf.h"		/* ConfigFileEntry, ConfigChannel */
 #include "s_newconf.h"
 #include "logger.h"
+#include "packet.h"
+#include "irc_dictionary.h"
+
+struct config_channel_entry ConfigChannel;
+rb_dlink_list global_channel_list;
+static rb_bh *channel_heap;
+static rb_bh *ban_heap;
+static rb_bh *topic_heap;
+static rb_bh *member_heap;
 
 static int channel_capabs[] = { CAP_EX, CAP_IE,
 	CAP_SERVICE,
@@ -54,6 +64,8 @@ static struct ChCapCombo chcap_combos[NCHCAP_COMBOS];
 static void free_topic(struct Channel *chptr);
 
 static int h_can_join;
+static int h_can_create_channel;
+static int h_channel_join;
 
 /* init_channels()
  *
@@ -70,6 +82,8 @@ init_channels(void)
 	member_heap = rb_bh_create(sizeof(struct membership), MEMBER_HEAP_SIZE, "member_heap");
 
 	h_can_join = register_hook("can_join");
+	h_channel_join = register_hook("channel_join");
+	h_can_create_channel = register_hook("can_create_channel");
 }
 
 /*
@@ -79,14 +93,19 @@ struct Channel *
 allocate_channel(const char *chname)
 {
 	struct Channel *chptr;
+	struct Dictionary *metadata;
 	chptr = rb_bh_alloc(channel_heap);
 	chptr->chname = rb_strdup(chname);
+	
+	metadata = irc_dictionary_create(irccmp);
+	chptr->metadata = metadata;
 	return (chptr);
 }
 
 void
 free_channel(struct Channel *chptr)
 {
+	channel_metadata_clear(chptr);
 	rb_free(chptr->chname);
 	rb_bh_free(channel_heap, chptr);
 }
@@ -162,10 +181,17 @@ find_channel_membership(struct Channel *chptr, struct Client *client_p)
 const char *
 find_channel_status(struct membership *msptr, int combine)
 {
-	static char buffer[3];
+	static char buffer[5];
 	char *p;
 
 	p = buffer;
+
+	if(is_admin(msptr))
+	{
+		if(!combine)
+			return "!";
+		*p++ = '!';
+	}
 
 	if(is_chanop(msptr))
 	{
@@ -174,11 +200,105 @@ find_channel_status(struct membership *msptr, int combine)
 		*p++ = '@';
 	}
 
+	if(is_halfop(msptr))
+	{
+		if(!combine)
+			return "%";
+		*p++ = '%';
+	}
+
 	if(is_voiced(msptr))
 		*p++ = '+';
 
 	*p = '\0';
 	return buffer;
+}
+
+/* is_halfop()
+ *
+ * input    - membership to check for halfops
+ * output   - 1 if the user is halfopped, 0 if the user is not or halfop 
+ * is disabled.
+ * side effects - 
+ *
+ */
+int
+is_halfop(struct membership *msptr)
+{
+	if(!ConfigChannel.use_halfop)
+		return 0;
+	if(is_chmode_h(msptr))
+		return 1;
+	else
+		return 0;
+}
+
+/* is_admin()
+ *
+ * input    - membership to check for admin
+ * output   - 1 if the user is an admin, 0 if the user is not or admin 
+ * is disabled.
+ * side effects - 
+ *
+ */
+int
+is_admin(struct membership *msptr)
+{
+	if(!ConfigChannel.use_admin)
+		return 0;
+	if(is_chmode_a(msptr))
+		return 1;
+	else
+		return 0;
+}
+
+/* is_any_op()
+ *
+ * input	- membership to check for ops
+ * output	- 1 if the user is op, halfop, or admin, 0 elsewise
+ * side effects - 
+ */
+int
+is_any_op(struct membership *msptr)
+{
+	if(is_chanop(msptr) || is_halfop(msptr) || is_admin(msptr))
+		return 1;
+	else
+		return 0;
+}
+
+/* is_chanop_voiced()
+ *
+ * input	- memebership to check for status
+ * output	- 1 if the user is op, halfop, admin, or voice, 0 elsewise
+ * side effects -
+ */
+int
+is_chanop_voiced(struct membership *msptr)
+{
+	if(is_chanop(msptr) || is_voiced(msptr) || is_halfop(msptr) || is_admin(msptr))
+		return 1;
+	else
+		return 0;
+}
+
+/* can_kick_deop()
+ *
+ * input	- two memeberships
+ * output	- 1 if the first memebership can kick/deop the second, 0 elsewise
+ * side effects -
+ */
+int
+can_kick_deop(struct membership *source, struct membership *target)
+{
+	if(is_chanop(source) && !is_admin(target))
+		return 1;
+	else if(is_halfop(source) && !is_any_op(target))
+		return 1;
+	else if(is_admin(source))
+		return 1;
+
+	return 0;
 }
 
 /* add_user_to_channel()
@@ -233,8 +353,6 @@ remove_user_from_channel(struct membership *msptr)
 	if(client_p->servptr == &me)
 		rb_dlinkDelete(&msptr->locchannode, &chptr->locmembers);
 
-	chptr->users_last = rb_current_time();
-
 	if(!(chptr->mode.mode & MODE_PERMANENT) && rb_dlink_list_length(&chptr->members) <= 0)
 		destroy_channel(chptr);
 
@@ -269,8 +387,6 @@ remove_user_from_channels(struct Client *client_p)
 
 		if(client_p->servptr == &me)
 			rb_dlinkDelete(&msptr->locchannode, &chptr->locmembers);
-
-		chptr->users_last = rb_current_time();
 
 		if(!(chptr->mode.mode & MODE_PERMANENT) && rb_dlink_list_length(&chptr->members) <= 0)
 			destroy_channel(chptr);
@@ -710,9 +826,12 @@ can_join(struct Client *source_p, struct Channel *chptr, char *key)
 	char src_host[NICKLEN + USERLEN + HOSTLEN + 6];
 	char src_iphost[NICKLEN + USERLEN + HOSTLEN + 6];
 	char src_althost[NICKLEN + USERLEN + HOSTLEN + 6];
+	char *text = rb_strdup("");
 	int use_althost = 0;
 	int i = 0;
 	hook_data_channel moduledata;
+	struct Metadata *md;
+	struct DictionaryIter iter;
 
 	s_assert(source_p->localClient != NULL);
 
@@ -737,6 +856,17 @@ can_join(struct Client *source_p, struct Channel *chptr, char *key)
 
 	if((is_banned(chptr, source_p, NULL, src_host, src_iphost)) == CHFL_BAN)
 		return (ERR_BANNEDFROMCHAN);
+
+	rb_sprintf(text, "K%s", source_p->id);
+
+	DICTIONARY_FOREACH(md, &iter, chptr->metadata)
+	{
+		if(!strcmp(md->value, "KICKNOREJOIN") && !strcmp(md->name, text) && (md->timevalue + ConfigChannel.kick_no_rejoin_time > rb_current_time()))
+			return ERR_KICKNOREJOIN;
+		/* cleanup any stale KICKNOREJOIN metadata we find while we're at it */
+		if(!strcmp(md->value, "KICKNOREJOIN") && !(md->timevalue + ConfigChannel.kick_no_rejoin_time > rb_current_time()))  
+			channel_metadata_delete(chptr, md->name, 0);
+	}
 
 	if(chptr->mode.mode & MODE_INVITEONLY)
 	{
@@ -870,7 +1000,7 @@ find_bannickchange_channel(struct Client *client_p)
 	char src_host[NICKLEN + USERLEN + HOSTLEN + 6];
 	char src_iphost[NICKLEN + USERLEN + HOSTLEN + 6];
 
-	if (!MyClient(client_p))
+	if (!MyClient(client_p) || IsOverride(client_p))
 		return NULL;
 
 	rb_sprintf(src_host, "%s!%s@%s", client_p->name, client_p->username, client_p->host);
@@ -895,6 +1025,30 @@ find_bannickchange_channel(struct Client *client_p)
 	return NULL;
 }
 
+/* find_nonickchange_channel()
+ * Input: client to check
+ * Output: channel preventing nick change
+ */
+struct Channel *
+find_nonickchange_channel(struct Client *client_p)
+{
+	struct Channel *chptr;
+	struct membership *msptr;
+	rb_dlink_node *ptr;
+
+	if (!MyClient(client_p))
+		return NULL;
+
+	RB_DLINK_FOREACH(ptr, client_p->user->channel.head)
+	{
+		msptr = ptr->data;
+		chptr = msptr->chptr;
+		if (chptr->mode.mode & MODE_NONICK && (!ConfigChannel.exempt_cmode_N || !is_any_op(msptr)))
+			return chptr;
+	}
+	return NULL;
+}
+
 /* void check_spambot_warning(struct Client *source_p)
  * Input: Client to check, channel name or NULL if this is a part.
  * Output: none
@@ -914,19 +1068,14 @@ check_spambot_warning(struct Client *source_p, const char *name)
 			source_p->localClient->oper_warn_count_down--;
 		else
 			source_p->localClient->oper_warn_count_down = 0;
-		if(source_p->localClient->oper_warn_count_down == 0)
+		if(source_p->localClient->oper_warn_count_down == 0 &&
+				name != NULL)
 		{
 			/* Its already known as a possible spambot */
-			if(name != NULL)
-				sendto_realops_snomask(SNO_BOTS, L_NETWIDE,
-						     "User %s (%s@%s) trying to join %s is a possible spambot",
-						     source_p->name,
-						     source_p->username, source_p->orighost, name);
-			else
-				sendto_realops_snomask(SNO_BOTS, L_NETWIDE,
-						     "User %s (%s@%s) is a possible spambot",
-						     source_p->name,
-						     source_p->username, source_p->orighost);
+			sendto_realops_snomask(SNO_BOTS, L_NETWIDE,
+					     "User %s (%s@%s) trying to join %s is a possible spambot",
+					     source_p->name,
+					     source_p->username, source_p->orighost, name);
 			source_p->localClient->oper_warn_count_down = OPER_SPAM_COUNTDOWN;
 		}
 	}
@@ -937,7 +1086,9 @@ check_spambot_warning(struct Client *source_p, const char *name)
 		   JOIN_LEAVE_COUNT_EXPIRE_TIME)
 		{
 			decrement_count = (t_delta / JOIN_LEAVE_COUNT_EXPIRE_TIME);
-			if(decrement_count > source_p->localClient->join_leave_count)
+			if(name != NULL)
+				;
+			else if(decrement_count > source_p->localClient->join_leave_count)
 				source_p->localClient->join_leave_count = 0;
 			else
 				source_p->localClient->join_leave_count -= decrement_count;
@@ -992,6 +1143,7 @@ check_splitmode(void *unused)
 					     "Network rejoined, deactivating splitmode");
 
 			rb_event_delete(check_splitmode_ev);
+			check_splitmode_ev = NULL;
 		}
 	}
 }
@@ -1071,24 +1223,25 @@ set_channel_topic(struct Channel *chptr, const char *topic, const char *topic_in
 	}
 }
 
-const struct mode_letter chmode_flags[] =
+/* has_common_channel()
+ * 
+ * input	- pointer to client
+ *			- pointer to another client
+ * output	- 1 if the two have a channel in common, 0 elsewise
+ * side effects - none
+ */
+int
+has_common_channel(struct Client *client1, struct Client *client2)
 {
-	{MODE_INVITEONLY, 'i'},
-	{MODE_MODERATED, 'm'},
-	{MODE_NOPRIVMSGS, 'n'},
-	{MODE_PRIVATE, 'p'},
-	{MODE_SECRET, 's'},
-	{MODE_TOPICLIMIT, 't'},
-	{MODE_NOCOLOR, 'c'},
-	{MODE_FREEINVITE, 'g'},
-	{MODE_OPMODERATE, 'z'},
-	{MODE_EXLIMIT, 'L'},
-	{MODE_PERMANENT, 'P'},
-	{MODE_FREETARGET, 'F'},
-	{MODE_DISFORWARD, 'Q'},
-	{MODE_REGONLY, 'r'},
-	{0, '\0'}
-};
+	rb_dlink_node *ptr;
+
+	RB_DLINK_FOREACH(ptr, client1->user->channel.head)
+	{
+		if(IsMember(client2, ((struct membership *)ptr->data)->chptr))
+			return 1;
+	}
+	return 0;
+}
 
 /* channel_modes()
  *
@@ -1112,9 +1265,13 @@ channel_modes(struct Channel *chptr, struct Client *client_p)
 	*mbuf++ = '+';
 	*pbuf = '\0';
 
-	for (i = 0; chmode_flags[i].mode; ++i)
-		if(chptr->mode.mode & chmode_flags[i].mode)
-			*mbuf++ = chmode_flags[i].letter;
+	for (i = 0; i < 256; i++)
+	{
+		if(chmode_table[i].set_func == chm_hidden && !IsOper(client_p) && IsClient(client_p))
+			continue;
+		if(chptr->mode.mode & chmode_flags[i])
+			*mbuf++ = i;
+	}
 
 	if(chptr->mode.limit)
 	{
@@ -1295,13 +1452,9 @@ send_cap_mode_changes(struct Client *client_p, struct Client *source_p,
 		cap = chcap_combos[j].cap_yes;
 		nocap = chcap_combos[j].cap_no;
 
-		if(cap & CAP_TS6)
-			mbl = preflen = rb_sprintf(modebuf, ":%s TMODE %ld %s ",
-						   use_id(source_p), (long) chptr->channelts,
-						   chptr->chname);
-		else
-			mbl = preflen = rb_sprintf(modebuf, ":%s MODE %s ",
-						   source_p->name, chptr->chname);
+		mbl = preflen = rb_sprintf(modebuf, ":%s TMODE %ld %s ",
+					   use_id(source_p), (long) chptr->channelts,
+					   chptr->chname);
 
 		/* loop the list of - modes we have */
 		for (i = 0; i < mode_count; i++)
@@ -1315,7 +1468,7 @@ send_cap_mode_changes(struct Client *client_p, struct Client *source_p,
 			   || ((nocap & mode_changes[i].nocaps) != mode_changes[i].nocaps))
 				continue;
 
-			if((cap & CAP_TS6) && !EmptyString(mode_changes[i].id))
+			if(!EmptyString(mode_changes[i].id))
 				arg = mode_changes[i].id;
 			else
 				arg = mode_changes[i].arg;
@@ -1376,5 +1529,558 @@ send_cap_mode_changes(struct Client *client_p, struct Client *source_p,
 
 		if(nc != 0)
 			sendto_server(client_p, chptr, cap, nocap, "%s %s", modebuf, parabuf);
+	}
+}
+
+void 
+resv_chan_forcepart(const char *name, const char *reason, int temp_time)
+{
+	rb_dlink_node *ptr;
+	rb_dlink_node *next_ptr;
+	struct Channel *chptr;
+	struct membership *msptr;
+	struct Client *target_p;
+
+	if(!ConfigChannel.resv_forcepart)
+		return;
+
+	/* for each user on our server in the channel list
+	 * send them a PART, and notify opers.
+	 */
+	chptr = find_channel(name);
+	if(chptr != NULL)
+	{
+		RB_DLINK_FOREACH_SAFE(ptr, next_ptr, chptr->locmembers.head)
+		{
+			msptr = ptr->data;
+			target_p = msptr->client_p;
+
+			if(IsExemptResv(target_p))
+				continue;
+
+			sendto_server(target_p, chptr, CAP_TS6, NOCAPS,
+			              ":%s PART %s", target_p->id, chptr->chname);
+
+			sendto_channel_local(ALL_MEMBERS, chptr, ":%s!%s@%s PART %s :%s",
+			                     target_p->name, target_p->username,
+			                     target_p->host, chptr->chname, target_p->name);
+
+			remove_user_from_channel(msptr);
+
+			/* notify opers & user they were removed from the channel */
+			sendto_realops_snomask(SNO_GENERAL, L_ALL,
+			                     "Forced PART for %s!%s@%s from %s (%s)",
+			                     target_p->name, target_p->username, 
+			                     target_p->host, name, reason);
+
+			if(temp_time > 0)
+				sendto_one_notice(target_p, ":*** Channel %s is temporarily unavailable on this server.",
+				           name);
+			else
+				sendto_one_notice(target_p, ":*** Channel %s is no longer available on this server.",
+				           name);
+		}
+	}
+}
+
+/* Check what we will forward to, without sending any notices to the user
+ * -- jilles
+ */
+struct Channel *
+check_forward(struct Client *source_p, struct Channel *chptr,
+		char *key)
+{
+	int depth = 0, i;
+
+	/* User is +Q */
+	if (IsNoForward(source_p))
+		return NULL;
+
+	while (depth < 16)
+	{
+		chptr = find_channel(chptr->mode.forward);
+		/* Can only forward to existing channels */
+		if (chptr == NULL)
+			return NULL;
+		/* Already on there, show original error message */
+		if (IsMember(source_p, chptr))
+			return NULL;
+		/* Juped. Sending a warning notice would be unfair */
+		if (hash_find_resv(chptr->chname))
+			return NULL;
+		/* Don't forward to +Q channel */
+		if (chptr->mode.mode & MODE_DISFORWARD)
+			return NULL;
+		i = can_join(source_p, chptr, key);
+		if (i == 0)
+			return chptr;
+		if (i != ERR_INVITEONLYCHAN && i != ERR_NEEDREGGEDNICK && i != ERR_THROTTLE && i != ERR_CHANNELISFULL)
+			return NULL;
+		depth++;
+	}
+
+	return NULL;
+}
+
+/*
+ * do_join_0
+ *
+ * inputs	- pointer to client doing join 0
+ * output	- NONE
+ * side effects	- Use has decided to join 0. This is legacy
+ *		  from the days when channels were numbers not names. *sigh*
+ */
+void
+do_join_0(struct Client *client_p, struct Client *source_p)
+{
+	struct membership *msptr;
+	struct Channel *chptr = NULL;
+	rb_dlink_node *ptr;
+
+	/* Finish the flood grace period... */
+	if(MyClient(source_p) && !IsFloodDone(source_p))
+		flood_endgrace(source_p);
+
+	sendto_server(client_p, NULL, CAP_TS6, NOCAPS, ":%s JOIN 0", use_id(source_p));
+
+	while((ptr = source_p->user->channel.head))
+	{
+	if(source_p->user->channel.head && MyConnect(source_p) &&
+	   !IsOper(source_p) && !IsExemptSpambot(source_p))
+		check_spambot_warning(source_p, NULL);
+
+		msptr = ptr->data;
+		chptr = msptr->chptr;
+		sendto_channel_local(ALL_MEMBERS, chptr, ":%s!%s@%s PART %s",
+				     source_p->name,
+				     source_p->username, source_p->host, chptr->chname);
+		remove_user_from_channel(msptr);
+	}
+}
+
+int
+check_channel_name_loc(struct Client *source_p, const char *name)
+{
+	const char *p;
+
+	s_assert(name != NULL);
+	if(EmptyString(name))
+		return 0;
+
+	if(ConfigFileEntry.disable_fake_channels && !IsOper(source_p))
+	{
+		for(p = name; *p; ++p)
+		{
+			if(!IsChanChar(*p) || IsFakeChanChar(*p))
+				return 0;
+		}
+	}
+	else
+	{
+		for(p = name; *p; ++p)
+		{
+			if(!IsChanChar(*p))
+				return 0;
+		}
+	}
+
+	if(ConfigChannel.only_ascii_channels)
+    {
+    	for(p = name; *p; ++p)
+			if(*p < 33 || *p > 126)
+    			return 0;
+    }
+
+
+	return 1;
+}
+
+void user_join(struct Client * client_p, struct Client * source_p, const char * channels, const char * keys)
+{
+	static char jbuf[BUFSIZE];
+	struct Channel *chptr = NULL;
+	struct ConfItem *aconf;
+	char *name;
+	char *key = NULL;
+	const char *modes;
+	int i, flags = 0;
+	char *p = NULL, *p2 = NULL;
+	char *chanlist;
+	char *mykey;
+
+	jbuf[0] = '\0';
+
+	if(channels == NULL)
+		return;
+
+	/* rebuild the list of channels theyre supposed to be joining.
+	 * this code has a side effect of losing keys, but..
+	 */
+	chanlist = LOCAL_COPY(channels);
+	for(name = rb_strtok_r(chanlist, ",", &p); name; name = rb_strtok_r(NULL, ",", &p))
+	{
+		/* check the length and name of channel is ok */
+		if(!check_channel_name_loc(source_p, name) || (strlen(name) > LOC_CHANNELLEN))
+		{
+			sendto_one_numeric(source_p, ERR_BADCHANNAME,
+					   form_str(ERR_BADCHANNAME), (unsigned char *) name);
+			continue;
+		}
+
+		/* join 0 parts all channels */
+		if(*name == '0' && (name[1] == ',' || name[1] == '\0') && name == chanlist)
+		{
+			(void) strcpy(jbuf, "0");
+			continue;
+		}
+
+		/* check it begins with # or &, and local chans are disabled */
+                else if(!IsChannelName(name) ||
+                        ( !ConfigChannel.use_local_channels && name[0] == '&'))
+		{
+			sendto_one_numeric(source_p, ERR_NOSUCHCHANNEL,
+					   form_str(ERR_NOSUCHCHANNEL), name);
+			continue;
+		}
+
+		/* see if its resv'd */
+		if(!IsExemptResv(source_p) && (aconf = hash_find_resv(name)))
+		{
+			sendto_one_numeric(source_p, ERR_BADCHANNAME,
+					   form_str(ERR_BADCHANNAME), name);
+
+			/* dont warn for opers */
+			if(!IsExemptJupe(source_p) && !IsOper(source_p))
+				sendto_realops_snomask(SNO_SPY, L_NETWIDE,
+						     "User %s (%s@%s) is attempting to join locally juped channel %s (%s)",
+						     source_p->name, source_p->username,
+						     source_p->orighost, name, aconf->passwd);
+			/* dont update tracking for jupe exempt users, these
+			 * are likely to be spamtrap leaves
+			 */
+			else if(IsExemptJupe(source_p))
+				aconf->port--;
+
+			continue;
+		}
+
+		if(splitmode && !IsOper(source_p) && (*name != '&') &&
+		   ConfigChannel.no_join_on_split)
+		{
+			sendto_one(source_p, form_str(ERR_UNAVAILRESOURCE),
+				   me.name, source_p->name, name);
+			continue;
+		}
+
+		if(*jbuf)
+			(void) strcat(jbuf, ",");
+		(void) rb_strlcat(jbuf, name, sizeof(jbuf));
+	}
+
+	if(keys != NULL)
+	{
+		mykey = LOCAL_COPY(keys);
+		key = rb_strtok_r(mykey, ",", &p2);
+	}
+
+	for(name = rb_strtok_r(jbuf, ",", &p); name;
+	    key = (key) ? rb_strtok_r(NULL, ",", &p2) : NULL, name = rb_strtok_r(NULL, ",", &p))
+	{
+		hook_data_channel_activity hook_info;
+
+		/* JOIN 0 simply parts all channels the user is in */
+		if(*name == '0' && !atoi(name))
+		{
+			if(source_p->user->channel.head == NULL)
+				continue;
+
+			do_join_0(&me, source_p);
+			continue;
+		}
+
+		/* look for the channel */
+		if((chptr = find_channel(name)) != NULL)
+		{
+			if(IsMember(source_p, chptr))
+				continue;
+
+			flags = 0;
+		}
+		else
+		{
+			hook_data_client_approval moduledata;
+
+			moduledata.client = source_p;
+			moduledata.approved = 0;
+
+			call_hook(h_can_create_channel, &moduledata);
+
+			if(moduledata.approved != 0)
+			{
+				sendto_one(source_p, form_str(moduledata.approved),
+					   me.name, source_p->name, name);
+				continue;
+			}
+
+			if(splitmode && !IsOper(source_p) && (*name != '&') &&
+			   ConfigChannel.no_create_on_split)
+			{
+				sendto_one(source_p, form_str(ERR_UNAVAILRESOURCE),
+					   me.name, source_p->name, name);
+				continue;
+			}
+
+			flags = CHFL_CHANOP;
+		}
+
+		if((rb_dlink_list_length(&source_p->user->channel) >=
+		    (unsigned long) ConfigChannel.max_chans_per_user) &&
+		   (!IsOper(source_p) ||
+		    (rb_dlink_list_length(&source_p->user->channel) >=
+		     (unsigned long) ConfigChannel.max_chans_per_user * 3)))
+		{
+			sendto_one(source_p, form_str(ERR_TOOMANYCHANNELS),
+				   me.name, source_p->name, name);
+			return;
+		}
+
+		if(chptr == NULL)	/* If I already have a chptr, no point doing this */
+		{
+			chptr = get_or_create_channel(source_p, name, NULL);
+
+			if(chptr == NULL)
+			{
+				sendto_one(source_p, form_str(ERR_UNAVAILRESOURCE),
+					   me.name, source_p->name, name);
+				continue;
+			}
+		}
+
+		/* can_join checks for +i key, bans etc */
+		if((i = can_join(source_p, chptr, key)))
+		{
+			if(IsOverride(source_p))
+			{
+				sendto_wallops_flags(UMODE_WALLOP, &me,
+						"%s is overriding JOIN to [%s]",
+					get_oper_name(source_p), chptr->chname);
+				sendto_server(NULL, chptr, NOCAPS, NOCAPS,
+						":%s WALLOPS :%s is overriding JOIN to [%s]",
+						me.name, get_oper_name(source_p), chptr->chname);
+			}
+			else if ((i != ERR_NEEDREGGEDNICK && i != ERR_THROTTLE && i != ERR_INVITEONLYCHAN && i != ERR_CHANNELISFULL) ||
+			    (!ConfigChannel.use_forward || (chptr = check_forward(source_p, chptr, key)) == NULL))
+			{
+				/* might be wrong, but is there any other better location for such?
+				 * see extensions/chm_operonly.c for other comments on this
+				 * -- dwr
+				 */
+				if(i != ERR_CUSTOM)
+					sendto_one(source_p, form_str(i), me.name, source_p->name, name);
+
+				continue;
+			}
+			else
+				sendto_one_numeric(source_p, ERR_LINKCHANNEL, form_str(ERR_LINKCHANNEL), name, chptr->chname);
+		}
+		
+		if(flags == 0 &&
+     					!IsOper(source_p) && !IsExemptSpambot(source_p))
+				check_spambot_warning(source_p, name);
+
+		/* add the user to the channel */
+		add_user_to_channel(chptr, source_p, flags);
+		if (chptr->mode.join_num &&
+			rb_current_time() - chptr->join_delta >= chptr->mode.join_time)
+		{
+			chptr->join_count = 0;
+			chptr->join_delta = rb_current_time();
+		}
+		chptr->join_count++;
+
+		/* we send the user their join here, because we could have to
+		 * send a mode out next.
+		 */
+		sendto_channel_local(ALL_MEMBERS, chptr, ":%s!%s@%s JOIN :%s",
+				     source_p->name,
+				     source_p->username, source_p->host, chptr->chname);
+
+		/* its a new channel, set +nt and burst. */
+		if(flags & CHFL_CHANOP)
+		{
+			chptr->channelts = rb_current_time();
+
+			/* autochanmodes stuff */
+			if(ConfigChannel.autochanmodes)
+			{
+				char * ch;
+				for(ch = ConfigChannel.autochanmodes; *ch; *ch++)
+				{
+					chptr->mode.mode |= chmode_table[*ch].mode_type;
+				}
+			}
+			else
+			{
+				chptr->mode.mode |= MODE_TOPICLIMIT;
+				chptr->mode.mode |= MODE_NOPRIVMSGS;
+			}
+
+			modes = channel_modes(chptr, &me);
+
+			sendto_channel_local(ONLY_CHANOPS, chptr, ":%s MODE %s %s",
+					     me.name, chptr->chname, modes);
+
+			sendto_server(client_p, chptr, CAP_TS6, NOCAPS,
+				      ":%s SJOIN %ld %s %s :@%s",
+				      me.id, (long) chptr->channelts,
+				      chptr->chname, modes, source_p->id);
+		}
+		else
+		{
+			sendto_server(client_p, chptr, CAP_TS6, NOCAPS,
+				      ":%s JOIN %ld %s +",
+				      use_id(source_p), (long) chptr->channelts,
+				      chptr->chname);
+		}
+
+		del_invite(chptr, source_p);
+
+		if(chptr->topic != NULL)
+		{
+			sendto_one(source_p, form_str(RPL_TOPIC), me.name,
+				   source_p->name, chptr->chname, chptr->topic);
+
+			sendto_one(source_p, form_str(RPL_TOPICWHOTIME),
+				   me.name, source_p->name, chptr->chname,
+				   chptr->topic_info, chptr->topic_time);
+		}
+
+		channel_member_names(chptr, source_p, 1);
+
+		hook_info.client = source_p;
+		hook_info.chptr = chptr;
+		hook_info.key = key;
+		call_hook(h_channel_join, &hook_info);
+	}
+
+	return;
+}
+
+/*
+ * channel_metadata_add
+ * 
+ * inputs	- pointer to channel struct
+ *		- name of metadata item you wish to add
+ *		- value of metadata item
+ *		- 1 if metadata should be propegated, 0 if not
+ * output	- none
+ * side effects - metadata is added to the channel in question
+ *		- metadata is propegated if propegate is set.
+ */
+struct Metadata *
+channel_metadata_add(struct Channel *target, const char *name, const char *value, int propegate)
+{
+	struct Metadata *md;
+
+	md = rb_malloc(sizeof(struct Metadata));
+	md->name = rb_strdup(name);
+	md->value = rb_strdup(value);
+
+	irc_dictionary_add(target->metadata, md->name, md);
+	
+	if(propegate)
+		sendto_match_servs(&me, "*", CAP_ENCAP, NOCAPS, "ENCAP * METADATA ADD %s %s :%s",
+				target->chname, name, value);
+
+	return md;
+}
+
+/*
+ * channel_metadata_time_add
+ * 
+ * inputs	- pointer to channel struct
+ *		- name of metadata item you wish to add
+ *		- time_t you wish to add
+ *		- value you wish to add
+ * output	- none
+ * side effects - metadata is added to the channel in question
+ */
+struct Metadata *
+channel_metadata_time_add(struct Channel *target, const char *name, time_t timevalue, const char *value)
+{
+	struct Metadata *md;
+
+	md = rb_malloc(sizeof(struct Metadata));
+	md->name = rb_strdup(name);
+	md->value = rb_strdup(value);
+	md->timevalue = timevalue;
+
+	irc_dictionary_add(target->metadata, md->name, md);
+
+	return md;
+}
+
+/*
+ * channel_metadata_delete
+ * 
+ * inputs	- pointer to channel struct
+ *		- name of metadata item you wish to delete
+ * output	- none
+ * side effects - metadata is deleted from the channel in question
+ * 		- deletion is propegated if propegate is set
+ */
+void
+channel_metadata_delete(struct Channel *target, const char *name, int propegate)
+{
+	struct Metadata *md = channel_metadata_find(target, name);
+
+	if(!md)
+		return;
+
+	irc_dictionary_delete(target->metadata, md->name);
+
+	rb_free(md);
+
+	if(propegate)
+		sendto_match_servs(&me, "*", CAP_ENCAP, NOCAPS, "ENCAP * METADATA DELETE %s %s",
+				target->chname, name);
+}
+
+/*
+ * channel_metadata_find
+ * 
+ * inputs	- pointer to channel struct
+ *		- name of metadata item you wish to read
+ * output	- the requested metadata, if it exists, elsewise null.
+ * side effects - 
+ */
+struct Metadata *
+channel_metadata_find(struct Channel *target, const char *name)
+{
+	if(!target)
+		return NULL;
+
+	if(!target->metadata)
+		return NULL;
+
+	return irc_dictionary_retrieve(target->metadata, name);
+}
+
+/*
+ * channel_metadata_clear
+ * 
+ * inputs	- pointer to channel struct
+ * output	- none
+ * side effects - metadata is cleared from the channel in question
+ */
+void
+channel_metadata_clear(struct Channel *chptr)
+{
+	struct Metadata *md;
+	struct DictionaryIter iter;
+	
+	DICTIONARY_FOREACH(md, &iter, chptr->metadata)
+	{
+		channel_metadata_delete(chptr, md->name, 0);
 	}
 }

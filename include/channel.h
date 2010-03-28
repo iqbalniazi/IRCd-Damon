@@ -1,4 +1,4 @@
-*
+/*
  *  ircd-ratbox: A slightly useful ircd.
  *  channel.h: The ircd channel header.
  *
