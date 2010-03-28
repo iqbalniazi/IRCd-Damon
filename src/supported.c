@@ -87,6 +87,7 @@
 #include "ircd.h"
 #include "s_conf.h"
 #include "supported.h"
+#include "chmode.h"
 
 rb_dlink_list isupportlist;
 
@@ -108,6 +109,32 @@ add_isupport(const char *name, const char *(*func)(const void *), const void *pa
 	item->func = func;
 	item->param = param;
 	rb_dlinkAddTail(item, &item->node, &isupportlist);
+}
+
+const void *
+change_isupport(const char *name, const char *(*func)(const void *), const void *param)
+{
+	rb_dlink_node *ptr;
+	struct isupportitem *item;
+	const void *oldvalue;
+
+	RB_DLINK_FOREACH(ptr, isupportlist.head)
+	{
+		item = ptr->data;
+
+		if (!strcmp(item->name, name))
+		{
+			oldvalue = item->param;
+
+			// item->name = name;
+			item->func = func;
+			item->param = param;
+
+			break;
+		}
+	}
+
+	return oldvalue;
 }
 
 void
@@ -209,13 +236,18 @@ isupport_chanmodes(const void *ptr)
 {
 	static char result[80];
 
-	rb_snprintf(result, sizeof result, "%s%sbq,k,%slj,imnpst%scgzLP%s",
+	rb_snprintf(result, sizeof result, "%s%sbq,k,%slj,%s",
 			ConfigChannel.use_except ? "e" : "",
 			ConfigChannel.use_invex ? "I" : "",
 			ConfigChannel.use_forward ? "f" : "",
-			rb_dlink_list_length(&service_list) ? "r" : "",
-			ConfigChannel.use_forward ? "QF" : "");
+			cflagsbuf);
 	return result;
+}
+
+static const char *
+isupport_chantypes(const void *ptr)
+{
+       return ConfigChannel.use_local_channels ? "&#" : "#";
 }
 
 static const char *
@@ -223,7 +255,22 @@ isupport_chanlimit(const void *ptr)
 {
 	static char result[30];
 
-	rb_snprintf(result, sizeof result, "&#:%i", ConfigChannel.max_chans_per_user);
+	rb_snprintf(result, sizeof result, "%s:%i",
+			ConfigChannel.use_local_channels ? "&#" : "#", 
+			ConfigChannel.max_chans_per_user);
+	return result;
+}
+
+static const char*
+isupport_prefix(const void *ptr)
+{
+	static char result[11];
+
+	rb_snprintf(result, sizeof result, "(%so%sv)%s@%s+",
+			ConfigChannel.use_admin ? "a" : "",
+			ConfigChannel.use_halfop ? "h" : "",
+			ConfigChannel.use_admin ? "!" : "",
+			ConfigChannel.use_halfop ? "%" : "");
 	return result;
 }
 
@@ -271,12 +318,12 @@ init_isupport(void)
 	static int channellen = LOC_CHANNELLEN;
 	static int topiclen = TOPICLEN;
 
-	add_isupport("CHANTYPES", isupport_string, "&#");
+	add_isupport("CHANTYPES", isupport_chantypes, NULL);
 	add_isupport("EXCEPTS", isupport_boolean, &ConfigChannel.use_except);
 	add_isupport("INVEX", isupport_boolean, &ConfigChannel.use_invex);
 	add_isupport("CHANMODES", isupport_chanmodes, NULL);
 	add_isupport("CHANLIMIT", isupport_chanlimit, NULL);
-	add_isupport("PREFIX", isupport_string, "(ov)@+");
+	add_isupport("PREFIX", isupport_prefix, NULL);
 	add_isupport("MAXLIST", isupport_maxlist, NULL);
 	add_isupport("MODES", isupport_intptr, &maxmodes);
 	add_isupport("NETWORK", isupport_stringptr, &ServerInfo.network_name);
@@ -298,4 +345,6 @@ init_isupport(void)
 	add_isupport("FNC", isupport_string, "");
 	add_isupport("TARGMAX", isupport_targmax, NULL);
 	add_isupport("EXTBAN", isupport_extban, NULL);
+	add_isupport("WHOX", isupport_string, "");
+	add_isupport("CLIENTVER", isupport_string, "3.0");
 }
